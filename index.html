@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>賞味期限チェッカー</title>
+  
+  <!-- iOS向けPWA（ホーム画面追加）設定 -->
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="賞味期限">
+  <link rel="apple-touch-icon" href="https://cdn-icons-png.flaticon.com/512/2927/2927347.png">
+
+  <!-- OCRライブラリ (Tesseract.js) -->
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background-color: #f2f2f7;
+      margin: 0;
+      padding: 16px 16px 100px 16px;
+      color: #000;
+    }
+    h1 { font-size: 24px; margin-bottom: 16px; text-align: center; }
+    .card {
+      background: #fff;
+      border-radius: 12px;
+      padding: 16px;
+      margin-bottom: 12px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    }
+    .item-info { display: flex; flex-direction: column; }
+    .item-name { font-weight: bold; font-size: 17px; margin-bottom: 4px; }
+    .item-date { font-size: 14px; color: #8e8e93; }
+    .badge {
+      padding: 6px 12px;
+      border-radius: 20px;
+      font-size: 13px;
+      font-weight: bold;
+    }
+    .badge-alert { background: #ff3b30; color: white; }
+    .badge-warn { background: #ff9500; color: white; }
+    .badge-ok { background: #e5e5ea; color: #3a3a3c; }
+    .btn-camera {
+      position: fixed;
+      bottom: 30px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: #007aff;
+      color: white;
+      border: none;
+      padding: 16px 32px;
+      border-radius: 30px;
+      font-size: 18px;
+      font-weight: bold;
+      box-shadow: 0 4px 12px rgba(0,122,255,0.4);
+      cursor: pointer;
+      width: 80%;
+      max-width: 300px;
+      text-align: center;
+    }
+    .delete-btn {
+      background: none;
+      border: none;
+      color: #c7c7cc;
+      font-size: 18px;
+      margin-left: 8px;
+      cursor: pointer;
+    }
+    #loading {
+      display: none;
+      position: fixed;
+      top: 0; left: 0; width: 100%; height: 100%;
+      background: rgba(0,0,0,0.6);
+      color: white;
+      text-align: center;
+      padding-top: 50%;
+      font-size: 18px;
+      z-index: 100;
+    }
+  </style>
+</head>
+<body>
+
+  <h1>📦 賞味期限ストック</h1>
+  <div id="itemList"></div>
+
+  <!-- カメラ起動用の隠し入力 -->
+  <input type="file" id="cameraInput" accept="image/*" capture="environment" style="display:none">
+  
+  <button class="btn-camera" onclick="document.getElementById('cameraInput').click()">
+    📷 撮影して追加
+  </button>
+
+  <div id="loading">
+    <div>🔍 OCR解析中...</div>
+    <div style="font-size: 12px; margin-top: 8px; color: #ccc;">(画像は端末内に保存されません)</div>
+  </div>
+
+  <script>
+    let items = JSON.parse(localStorage.getItem('food_items') || '[]');
+
+    function renderList() {
+      const container = document.getElementById('itemList');
+      if (items.length === 0) {
+        container.innerHTML = '<p style="text-align:center; color:#8e8e93;">登録されている食材はありません</p>';
+        return;
+      }
+      
+      const today = new Date();
+      today.setHours(0,0,0,0);
+
+      container.innerHTML = items.map((item, index) => {
+        const expDate = new Date(item.expireDate);
+        const diffDays = Math.ceil((expDate - today) / (1000 * 60 * 60 * 24));
+        
+        let badgeClass = 'badge-ok';
+        if (diffDays <= 3) badgeClass = 'badge-alert';
+        else if (diffDays <= 7) badgeClass = 'badge-warn';
+
+        return `
+          <div class="card">
+            <div class="item-info">
+              <span class="item-name">${item.name}</span>
+              <span class="item-date">期限: ${item.expireDate}</span>
+            </div>
+            <div style="display:flex; align-items:center;">
+              <span class="badge ${badgeClass}">あと ${diffDays} 日</span>
+              <button class="delete-btn" onclick="deleteItem(${index})">✕</button>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    function deleteItem(index) {
+      items.splice(index, 1);
+      localStorage.setItem('food_items', JSON.stringify(items));
+      renderList();
+    }
+
+    // OCRと日付抽出
+    document.getElementById('cameraInput').addEventListener('change', async function(e) {
+      const file = e.target.files[0];
+      if (!file) return;
+
+      document.getElementById('loading').style.display = 'block';
+
+      try {
+        // Tesseract.jsで解析（画像はメモリ上のみで保持）
+        const worker = await Tesseract.createWorker('jpn');
+        const ret = await worker.recognize(file);
+        await worker.terminate();
+
+        // 画像の参照をクリアしてメモリ・ストレージを消費させない
+        e.target.value = '';
+
+        // 日付（YYYY/MM/DD や YY.MM.DD など）を抽出する正規表現
+        const text = ret.data.text;
+        const dateMatch = text.match(/(?:20\d{2}|\d{2})[\.\/\-年]?\s*(0[1-9]|1[0-2])[\.\/\-月]?\s*(0[1-9]|[12]\d|3[01])日?/);
+
+        document.getElementById('loading').style.display = 'none';
+
+        if (dateMatch) {
+          let year = dateMatch[0].match(/(20\d{2}|\d{2})/)[0];
+          if (year.length === 2) year = '20' + year;
+          const month = dateMatch[1].padStart(2, '0');
+          const day = dateMatch[2].padStart(2, '0');
+          const formattedDate = `${year}/${month}/${day}`;
+
+          const name = prompt(`賞味期限: ${formattedDate}\n商品名を入力してください:`, '新しい食材');
+          if (name) {
+            items.push({ name, expireDate: formattedDate });
+            // 日付順にソート
+            items.sort((a, b) => new Date(a.expireDate) - new Date(b.expireDate));
+            localStorage.setItem('food_items', JSON.stringify(items));
+            renderList();
+          }
+        } else {
+          alert('日付を読み取れませんでした。もう一度撮影してください。');
+        }
+      } catch (err) {
+        alert('エラーが発生しました: ' + err);
+        document.getElementById('loading').style.display = 'none';
+      }
+    });
+
+    renderList();
+  </script>
+</body>
+</html>
