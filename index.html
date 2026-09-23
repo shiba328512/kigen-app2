@@ -5,7 +5,6 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
   <title>賞味期限チェッカー</title>
   
-  <!-- iOS向けPWA（ホーム画面追加）設定 -->
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <meta name="apple-mobile-web-app-title" content="賞味期限">
@@ -19,43 +18,81 @@
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       background-color: #f2f2f7;
       margin: 0;
-      padding: 16px 16px 100px 16px;
+      padding: 16px 16px 120px 16px;
       color: #000;
     }
-    h1 { font-size: 24px; margin-bottom: 16px; text-align: center; }
-    .card {
-      background: #fff;
-      border-radius: 12px;
-      padding: 16px;
-      margin-bottom: 12px;
+    h1 { font-size: 22px; margin-bottom: 12px; text-align: center; }
+    
+    /* ツールバー（一括操作用） */
+    .toolbar {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+      margin-bottom: 12px;
+      padding: 0 4px;
     }
-    .item-info { display: flex; flex-direction: column; }
-    .item-name { font-weight: bold; font-size: 17px; margin-bottom: 4px; }
-    .item-date { font-size: 14px; color: #8e8e93; }
-    .badge {
+    .btn-action {
+      background: #e5e5ea;
+      color: #007aff;
+      border: none;
       padding: 6px 12px;
-      border-radius: 20px;
+      border-radius: 8px;
       font-size: 13px;
       font-weight: bold;
+      cursor: pointer;
+    }
+    .btn-danger {
+      background: #ff3b30;
+      color: white;
+    }
+
+    .card {
+      background: #fff;
+      border-radius: 12px;
+      padding: 12px;
+      margin-bottom: 10px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    }
+    
+    /* 1cm角程度のサムネイル画像 */
+    .thumb-img {
+      width: 44px;
+      height: 44px;
+      border-radius: 8px;
+      object-fit: cover;
+      background: #eee;
+      flex-shrink: 0;
+    }
+
+    .item-info { flex-grow: 1; display: flex; flex-direction: column; }
+    .item-name { font-weight: bold; font-size: 16px; margin-bottom: 2px; }
+    .item-date { font-size: 13px; color: #8e8e93; }
+    
+    .badge {
+      padding: 4px 8px;
+      border-radius: 12px;
+      font-size: 12px;
+      font-weight: bold;
+      white-space: nowrap;
     }
     .badge-alert { background: #ff3b30; color: white; }
     .badge-warn { background: #ff9500; color: white; }
     .badge-ok { background: #e5e5ea; color: #3a3a3c; }
+
     .btn-camera {
       position: fixed;
-      bottom: 30px;
+      bottom: 24px;
       left: 50%;
       transform: translateX(-50%);
       background: #007aff;
       color: white;
       border: none;
-      padding: 16px 32px;
+      padding: 14px 28px;
       border-radius: 30px;
-      font-size: 18px;
+      font-size: 17px;
       font-weight: bold;
       box-shadow: 0 4px 12px rgba(0,122,255,0.4);
       cursor: pointer;
@@ -68,8 +105,8 @@
       border: none;
       color: #c7c7cc;
       font-size: 18px;
-      margin-left: 8px;
       cursor: pointer;
+      padding: 4px;
     }
     #loading {
       display: none;
@@ -79,17 +116,27 @@
       color: white;
       text-align: center;
       padding-top: 50%;
-      font-size: 18px;
+      font-size: 16px;
       z-index: 100;
+    }
+    input[type="checkbox"] {
+      width: 20px;
+      height: 20px;
+      accent-color: #007aff;
     }
   </style>
 </head>
 <body>
 
   <h1>📦 賞味期限ストック</h1>
+
+  <div class="toolbar">
+    <button class="btn-action" onclick="toggleSelectAll()">全選択 / 解除</button>
+    <button class="btn-action btn-danger" onclick="deleteSelected()">選択した項目を削除</button>
+  </div>
+
   <div id="itemList"></div>
 
-  <!-- カメラ起動用の隠し入力 -->
   <input type="file" id="cameraInput" accept="image/*" capture="environment" style="display:none">
   
   <button class="btn-camera" onclick="document.getElementById('cameraInput').click()">
@@ -98,7 +145,7 @@
 
   <div id="loading">
     <div>🔍 OCR解析中...</div>
-    <div style="font-size: 12px; margin-top: 8px; color: #ccc;">(画像は端末内に保存されません)</div>
+    <div style="font-size: 12px; margin-top: 8px; color: #ccc;">(サムネイルのみ超軽量化して保存)</div>
   </div>
 
   <script>
@@ -107,7 +154,7 @@
     function renderList() {
       const container = document.getElementById('itemList');
       if (items.length === 0) {
-        container.innerHTML = '<p style="text-align:center; color:#8e8e93;">登録されている食材はありません</p>';
+        container.innerHTML = '<p style="text-align:center; color:#8e8e93; margin-top:40px;">登録されている食材はありません</p>';
         return;
       }
       
@@ -122,28 +169,115 @@
         if (diffDays <= 3) badgeClass = 'badge-alert';
         else if (diffDays <= 7) badgeClass = 'badge-warn';
 
+        const thumbSrc = item.thumb || 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="44" height="44" viewBox="0 0 24 24" fill="%23ccc"><path d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/></svg>';
+
         return `
           <div class="card">
+            <input type="checkbox" class="item-checkbox" data-index="${index}">
+            <img class="thumb-img" src="${thumbSrc}" alt="thumb">
             <div class="item-info">
               <span class="item-name">${item.name}</span>
               <span class="item-date">期限: ${item.expireDate}</span>
             </div>
-            <div style="display:flex; align-items:center;">
-              <span class="badge ${badgeClass}">あと ${diffDays} 日</span>
-              <button class="delete-btn" onclick="deleteItem(${index})">✕</button>
-            </div>
+            <span class="badge ${badgeClass}">あと ${diffDays} 日</span>
+            <button class="delete-btn" onclick="deleteSingle(${index})">✕</button>
           </div>
         `;
       }).join('');
     }
 
-    function deleteItem(index) {
-      items.splice(index, 1);
+    // 単体削除
+    function deleteSingle(index) {
+      if (confirm('この項目を削除しますか？')) {
+        items.splice(index, 1);
+        saveAndRender();
+      }
+    }
+
+    // 全選択 / 解除
+    function toggleSelectAll() {
+      const checkboxes = document.querySelectorAll('.item-checkbox');
+      const allChecked = Array.from(checkboxes).every(cb => cb.checked);
+      checkboxes.forEach(cb => cb.checked = !allChecked);
+    }
+
+    // 選択項目を一括削除
+    function deleteSelected() {
+      const checkboxes = document.querySelectorAll('.item-checkbox:checked');
+      if (checkboxes.length === 0) {
+        alert('削除する項目にチェックを入れてください。');
+        return;
+      }
+      
+      if (confirm(`選択した ${checkboxes.length} 件を削除しますか？`)) {
+        const indexesToDelete = Array.from(checkboxes).map(cb => parseInt(cb.dataset.index)).sort((a,b) => b - a);
+        indexesToDelete.forEach(idx => items.splice(idx, 1));
+        saveAndRender();
+      }
+    }
+
+    function saveAndRender() {
       localStorage.setItem('food_items', JSON.stringify(items));
       renderList();
     }
 
-    // OCRと日付抽出
+    // 超軽量サムネイル生成（約2〜3KBに圧縮）
+    function createThumbnail(file) {
+      return new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          const img = new Image();
+          img.onload = () => {
+            const canvas = document.createElement('canvas');
+            const size = 60; // 60x60px
+            canvas.width = size;
+            canvas.height = size;
+            const ctx = canvas.getContext('2d');
+            
+            // 正方形クロップ
+            const minSide = Math.min(img.width, img.height);
+            const startX = (img.width - minSide) / 2;
+            const startY = (img.height - minSide) / 2;
+            ctx.drawImage(img, startX, startY, minSide, minSide, 0, 0, size, size);
+            
+            // 画質50%のJPEGで生成
+            resolve(canvas.toDataURL('image/jpeg', 0.5));
+          };
+          img.src = e.target.result;
+        };
+        reader.readAsDataURL(file);
+      });
+    }
+
+    // 日付解析（年月日 ＆ 年月のみ→月末日変換）
+    function parseExpireDate(text) {
+      // 1. 年月日（例: 2027.09.15, 27/9/15）
+      const fullMatch = text.match(/(20\d{2}|\d{2})[\.\/\-年\s]?(0?[1-9]|1[0-2])[\.\/\-月\s]?(0?[1-9]|[12]\d|3[01])日?/);
+      if (fullMatch) {
+        let y = fullMatch[1].length === 2 ? '20' + fullMatch[1] : fullMatch[1];
+        let m = fullMatch[2].padStart(2, '0');
+        let d = fullMatch[3].padStart(2, '0');
+        return `${y}/${m}/${d}`;
+      }
+
+      // 2. 年月のみ（例: 27.9, 2027.9, 27年9月）➔ 月末日に変換
+      const ymMatch = text.match(/(20\d{2}|\d{2})[\.\/\-年\s]?(0?[1-9]|1[0-2])月?/);
+      if (ymMatch) {
+        let y = parseInt(ymMatch[1].length === 2 ? '20' + ymMatch[1] : ymMatch[1], 10);
+        let m = parseInt(ymMatch[2], 10);
+        
+        // 当該月の最終日を取得（例: 9月 ➔ 30日、2月 ➔ 28/29日）
+        const lastDay = new Date(y, m, 0).getDate();
+        
+        let formattedM = String(m).padStart(2, '0');
+        let formattedD = String(lastDay).padStart(2, '0');
+        return `${y}/${formattedM}/${formattedD}`;
+      }
+
+      return null;
+    }
+
+    // 撮影＆登録イベント
     document.getElementById('cameraInput').addEventListener('change', async function(e) {
       const file = e.target.files[0];
       if (!file) return;
@@ -151,34 +285,29 @@
       document.getElementById('loading').style.display = 'block';
 
       try {
-        // Tesseract.jsで解析（画像はメモリ上のみで保持）
-        const worker = await Tesseract.createWorker('jpn');
+        // サムネイル画像作成とOCR処理を並行して実行
+        const [thumbDataUrl, worker] = await Promise.all([
+          createThumbnail(file),
+          Tesseract.createWorker('jpn')
+        ]);
+
         const ret = await worker.recognize(file);
         await worker.terminate();
-
-        // 画像の参照をクリアしてメモリ・ストレージを消費させない
         e.target.value = '';
 
-        // 日付（YYYY/MM/DD や YY.MM.DD など）を抽出する正規表現
-        const text = ret.data.text;
-        const dateMatch = text.match(/(?:20\d{2}|\d{2})[\.\/\-年]?\s*(0[1-9]|1[0-2])[\.\/\-月]?\s*(0[1-9]|[12]\d|3[01])日?/);
-
+        const parsedDate = parseExpireDate(ret.data.text);
         document.getElementById('loading').style.display = 'none';
 
-        if (dateMatch) {
-          let year = dateMatch[0].match(/(20\d{2}|\d{2})/)[0];
-          if (year.length === 2) year = '20' + year;
-          const month = dateMatch[1].padStart(2, '0');
-          const day = dateMatch[2].padStart(2, '0');
-          const formattedDate = `${year}/${month}/${day}`;
-
-          const name = prompt(`賞味期限: ${formattedDate}\n商品名を入力してください:`, '新しい食材');
+        if (parsedDate) {
+          const name = prompt(`抽出日付: ${parsedDate}\n商品名を入力してください:`, '新しい食材');
           if (name) {
-            items.push({ name, expireDate: formattedDate });
-            // 日付順にソート
+            items.push({ 
+              name, 
+              expireDate: parsedDate, 
+              thumb: thumbDataUrl 
+            });
             items.sort((a, b) => new Date(a.expireDate) - new Date(b.expireDate));
-            localStorage.setItem('food_items', JSON.stringify(items));
-            renderList();
+            saveAndRender();
           }
         } else {
           alert('日付を読み取れませんでした。もう一度撮影してください。');
