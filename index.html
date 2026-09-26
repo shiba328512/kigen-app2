@@ -20,6 +20,8 @@
       margin: 0;
       padding: 16px 16px 120px 16px;
       color: #000;
+      user-select: none;
+      -webkit-user-select: none;
     }
     h1 { font-size: 22px; margin-bottom: 4px; text-align: center; }
     .sub-title { font-size: 11px; text-align: center; color: #8e8e93; margin-bottom: 12px; }
@@ -111,10 +113,11 @@
       display: none;
       position: fixed;
       top: 0; left: 0; width: 100%; height: 100%;
-      background: rgba(0,0,0,0.7);
+      background: rgba(0,0,0,0.85);
       z-index: 200;
       justify-content: center;
       align-items: center;
+      flex-direction: column;
     }
     .modal-content {
       background: white;
@@ -135,6 +138,44 @@
     }
     .modal-btns { display: flex; justify-content: flex-end; gap: 8px; }
     
+    /* 範囲指定モーダル */
+    #cropModalHeader {
+      color: white;
+      font-size: 14px;
+      margin-bottom: 8px;
+      text-align: center;
+    }
+    #canvasContainer {
+      position: relative;
+      max-width: 90vw;
+      max-height: 70vh;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+    #cropCanvas {
+      max-width: 100%;
+      max-height: 70vh;
+      border: 2px solid #007aff;
+      border-radius: 8px;
+      touch-action: none;
+    }
+    .crop-controls {
+      margin-top: 16px;
+      display: flex;
+      gap: 12px;
+    }
+    .btn-crop {
+      background: #34c759;
+      color: white;
+      border: none;
+      padding: 10px 20px;
+      border-radius: 20px;
+      font-weight: bold;
+      font-size: 15px;
+      cursor: pointer;
+    }
+
     /* 画像拡大モーダル */
     #imageModal img {
       max-width: 90%;
@@ -147,19 +188,19 @@
       display: none;
       position: fixed;
       top: 0; left: 0; width: 100%; height: 100%;
-      background: rgba(0,0,0,0.7);
+      background: rgba(0,0,0,0.8);
       color: white;
       text-align: center;
       padding-top: 50%;
       font-size: 16px;
-      z-index: 150;
+      z-index: 300;
     }
     input[type="checkbox"] { width: 20px; height: 20px; accent-color: #007aff; }
   </style>
 </head>
 <body>
 
-  <h1>📦 賞味期限ストックv1.3</h1>
+  <h1>📦 賞味期限ストック</h1>
   <div class="sub-title" id="aiStatus">🤖 AI学習モデル: 準備完了</div>
 
   <div class="toolbar">
@@ -175,10 +216,21 @@
     📷 撮影して追加
   </button>
 
+  <!-- フリーハンド範囲選択モーダル -->
+  <div id="cropModal" class="modal">
+    <div id="cropModalHeader">✍️ 賞味期限の数字を指で囲んでください</div>
+    <div id="canvasContainer">
+      <canvas id="cropCanvas"></canvas>
+    </div>
+    <div class="crop-controls">
+      <button class="btn-action" onclick="resetCropCanvas()">やり直し</button>
+      <button class="btn-crop" onclick="processCroppedOCR()">決定してOCR解析</button>
+    </div>
+  </div>
+
   <!-- ローディング表示 -->
   <div id="loading">
-    <div>🔍 高精度OCR解析中...</div>
-    <div style="font-size: 12px; margin-top: 8px; color: #ccc;">学習済みパターンを適用中</div>
+    <div>🔍 囲んだ部分をOCR解析中...</div>
   </div>
 
   <!-- 画像拡大モーダル -->
@@ -203,9 +255,16 @@
 
   <script>
     let items = JSON.parse(localStorage.getItem('food_items') || '[]');
-    // OCR精度向上のための学習DB (誤読パターン -> 正解パターン)
     let ocrLearningDB = JSON.parse(localStorage.getItem('ocr_learning_db') || '{}');
     let editingIndex = null;
+
+    // キャンバス・フリーハンド変数
+    let rawImage = null;
+    let originalFile = null;
+    let canvas = document.getElementById('cropCanvas');
+    let ctx = canvas.getContext('2d');
+    let isDrawing = false;
+    let strokePoints = [];
 
     function updateAIStatus() {
       const count = Object.keys(ocrLearningDB).length;
@@ -249,7 +308,7 @@
       }).join('');
     }
 
-    // 画像拡大表示
+    // 画像拡大モーダル
     function showImageModal(src) {
       document.getElementById('enlargedImage').src = src;
       document.getElementById('imageModal').style.display = 'flex';
@@ -258,7 +317,7 @@
       document.getElementById('imageModal').style.display = 'none';
     }
 
-    // 編集モーダル処理
+    // 編集モーダル
     function openEditModal(index) {
       editingIndex = index;
       document.getElementById('editName').value = items[index].name;
@@ -314,7 +373,187 @@
       renderList();
     }
 
-    // サムネイル生成（やや高画質化して拡大時にも見やすく調整）
+    // 1. 写真撮影後の処理（トリミングモーダル起動）
+    document.getElementById('cameraInput').addEventListener('change', function(e) {
+      const file = e.target.files[0];
+      if (!file) return;
+      originalFile = file;
+
+      const reader = new FileReader();
+      reader.onload = function(event) {
+        rawImage = new Image();
+        rawImage.onload = function() {
+          setupCropCanvas();
+          document.getElementById('cropModal').style.display = 'flex';
+        };
+        rawImage.src = event.target.result;
+      };
+      reader.readAsDataURL(file);
+      e.target.value = '';
+    });
+
+    // 2. キャンバスのセットアップ
+    function setupCropCanvas() {
+      const maxW = window.innerWidth * 0.9;
+      const maxH = window.innerHeight * 0.7;
+      let w = rawImage.width;
+      let h = rawImage.height;
+
+      const scale = Math.min(maxW / w, maxH / h);
+      canvas.width = w * scale;
+      canvas.height = h * scale;
+
+      resetCropCanvas();
+      attachCanvasEvents();
+    }
+
+    function resetCropCanvas() {
+      strokePoints = [];
+      ctx.drawImage(rawImage, 0, 0, canvas.width, canvas.height);
+    }
+
+    // 3. フリーハンド描写描画イベント
+    function getCanvasCoords(e) {
+      const rect = canvas.getBoundingClientRect();
+      const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+      const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+      return {
+        x: clientX - rect.left,
+        y: clientY - rect.top
+      };
+    }
+
+    function attachCanvasEvents() {
+      const startDraw = (e) => {
+        isDrawing = true;
+        strokePoints = [];
+        ctx.drawImage(rawImage, 0, 0, canvas.width, canvas.height);
+        const pt = getCanvasCoords(e);
+        strokePoints.push(pt);
+        ctx.beginPath();
+        ctx.strokeStyle = '#ff2d55';
+        ctx.lineWidth = 3;
+        ctx.moveTo(pt.x, pt.y);
+      };
+
+      const moveDraw = (e) => {
+        if (!isDrawing) return;
+        const pt = getCanvasCoords(e);
+        strokePoints.push(pt);
+        ctx.lineTo(pt.x, pt.y);
+        ctx.stroke();
+      };
+
+      const endDraw = () => {
+        if (!isDrawing) return;
+        isDrawing = false;
+        ctx.closePath();
+      };
+
+      canvas.onmousedown = startDraw;
+      canvas.onmousemove = moveDraw;
+      canvas.onmouseup = endDraw;
+
+      canvas.ontouchstart = startDraw;
+      canvas.ontouchmove = moveDraw;
+      canvas.ontouchend = endDraw;
+    }
+
+    // 4. 囲んだエリアを切り抜いてOCRに渡す
+    async function processCroppedOCR() {
+      if (strokePoints.length < 5) {
+        alert('賞味期限の数字の周りを指で囲んでください。');
+        return;
+      }
+
+      document.getElementById('cropModal').style.display = 'none';
+      document.getElementById('loading').style.display = 'block';
+
+      // 囲み領域のバウンディングボックス算出
+      const xs = strokePoints.map(p => p.x);
+      const ys = strokePoints.map(p => p.y);
+      const minX = Math.max(0, Math.min(...xs));
+      const maxX = Math.min(canvas.width, Math.max(...xs));
+      const minY = Math.max(0, Math.min(...ys));
+      const maxY = Math.min(canvas.height, Math.max(...ys));
+
+      const cropW = maxX - minX;
+      const cropH = maxY - minY;
+
+      if (cropW < 10 || cropH < 10) {
+        alert('囲んだ範囲が小さすぎます。もう少し大きく囲んでください。');
+        document.getElementById('loading').style.display = 'none';
+        document.getElementById('cropModal').style.display = 'flex';
+        return;
+      }
+
+      // 実際の画像サイズでの拡大率
+      const scaleX = rawImage.width / canvas.width;
+      const scaleY = rawImage.height / canvas.height;
+
+      // 切り抜き用Canvasの生成
+      const offCanvas = document.createElement('canvas');
+      offCanvas.width = cropW * scaleX;
+      offCanvas.height = cropH * scaleY;
+      const offCtx = offCanvas.getContext('2d');
+
+      offCtx.drawImage(
+        rawImage,
+        minX * scaleX, minY * scaleY, cropW * scaleX, cropH * scaleY,
+        0, 0, offCanvas.width, offCanvas.height
+      );
+
+      const croppedDataUrl = offCanvas.toDataURL('image/png');
+      const thumbDataUrl = await createThumbnail(originalFile);
+
+      // Tesseract OCR実行
+      try {
+        const worker = await Tesseract.createWorker('jpn');
+        const ret = await worker.recognize(croppedDataUrl);
+        await worker.terminate();
+
+        document.getElementById('loading').style.display = 'none';
+
+        const rawOcrText = ret.data.text;
+        const parsedDate = parseExpireDate(rawOcrText);
+
+        const detectedPrompt = parsedDate ? parsedDate : '';
+        const userDate = prompt(
+          parsedDate 
+            ? `【日付検出成功】\n賞味期限: ${parsedDate}\n誤りがある場合は修正してください:` 
+            : `【日付の自動検出に失敗しました】\n読み取りテキスト: "${rawOcrText.trim()}"\n\n賞味期限を入力してください(例: 2027/09/30):`,
+          detectedPrompt
+        );
+
+        if (userDate) {
+          // 修正学習データ蓄積
+          if (parsedDate !== userDate && rawOcrText.trim() !== '') {
+            const snippet = rawOcrText.replace(/\s+/g, '').substring(0, 15);
+            if (snippet) {
+              ocrLearningDB[snippet] = userDate;
+              localStorage.setItem('ocr_learning_db', JSON.stringify(ocrLearningDB));
+            }
+          }
+
+          // ★商品名入力時のプリセットを消し、即入力できるように空文字列に設定
+          const name = prompt('商品名を入力してください:', '');
+          if (name !== null) {
+            const finalName = name.trim() || '無題の食材';
+            items.push({ 
+              name: finalName, 
+              expireDate: userDate, 
+              thumb: thumbDataUrl 
+            });
+            saveAndRender();
+          }
+        }
+      } catch (err) {
+        alert('OCR解析エラー: ' + err);
+        document.getElementById('loading').style.display = 'none';
+      }
+    }
+
+    // サムネイル生成
     function createThumbnail(file) {
       return new Promise((resolve) => {
         const reader = new FileReader();
@@ -322,7 +561,7 @@
           const img = new Image();
           img.onload = () => {
             const canvas = document.createElement('canvas');
-            const size = 150; // 150x150px
+            const size = 150;
             canvas.width = size;
             canvas.height = size;
             const ctx = canvas.getContext('2d');
@@ -340,28 +579,27 @@
       });
     }
 
-    // 全角数字・記号の半角変換
+    // 全角半角変換
     function zenkakuToHankaku(str) {
       return str.replace(/[Ａ-Ｚａ-ｚ０-９]/g, function(s) {
         return String.fromCharCode(s.charCodeAt(0) - 0xFEE0);
       }).replace(/[\．\／\-\—\＿]/g, '.');
     }
 
-    // 日付解析エンジン（強化版＋学習補正適用）
+    // 日付解析エンジン
     function parseExpireDate(rawText) {
       let cleanText = zenkakuToHankaku(rawText);
 
-      // 1. 蓄積された学習辞書による自動補正
+      // 学習補正の適用
       Object.keys(ocrLearningDB).forEach(badPattern => {
         if (cleanText.includes(badPattern)) {
           cleanText = cleanText.replace(badPattern, ocrLearningDB[badPattern]);
         }
       });
 
-      // ノイズ文字の除去
       cleanText = cleanText.replace(/(賞味期限|消費期限|EXP|BB|BEST|BEFORE)/gi, '');
 
-      // パターンA: 年月日（例: 2027.09.15, 27/9/15, 2027年9月15日）
+      // パターンA: 年月日
       const fullMatch = cleanText.match(/(20\d{2}|\d{2})[\.\/\-\s]?([0-1]?\d)[\.\/\-\s]?([0-3]?\d)/);
       if (fullMatch) {
         let y = fullMatch[1].length === 2 ? '20' + fullMatch[1] : fullMatch[1];
@@ -372,7 +610,7 @@
         }
       }
 
-      // パターンB: 年月のみ（例: 27.9, 2027.9, 27年9月） ➔ 月末日に変換
+      // パターンB: 年月のみ
       const ymMatch = cleanText.match(/(20\d{2}|\d{2})[\.\/\-\s]?([0-1]?\d)/);
       if (ymMatch) {
         let y = parseInt(ymMatch[1].length === 2 ? '20' + ymMatch[1] : ymMatch[1], 10);
@@ -385,61 +623,6 @@
 
       return null;
     }
-
-    // 撮影＆登録イベント
-    document.getElementById('cameraInput').addEventListener('change', async function(e) {
-      const file = e.target.files[0];
-      if (!file) return;
-
-      document.getElementById('loading').style.display = 'block';
-
-      try {
-        const [thumbDataUrl, worker] = await Promise.all([
-          createThumbnail(file),
-          Tesseract.createWorker('jpn')
-        ]);
-
-        const ret = await worker.recognize(file);
-        await worker.terminate();
-        e.target.value = '';
-
-        const rawOcrText = ret.data.text;
-        const parsedDate = parseExpireDate(rawOcrText);
-        document.getElementById('loading').style.display = 'none';
-
-        const detectedPrompt = parsedDate ? parsedDate : '';
-        const userDate = prompt(
-          parsedDate 
-            ? `【日付検出成功】\n賞味期限: ${parsedDate}\n日付が違う場合は直接修正してください:` 
-            : `【日付の自動検出に失敗しました】\n読み取りテキスト:\n"${rawOcrText.substring(0,30)}..."\n\n賞味期限を半角(例: 2027/09/30)で入力してください:`,
-          detectedPrompt
-        );
-
-        if (userDate) {
-          // ユーザーが手動修正した場合、誤読テキストと正解を学習データとして蓄積
-          if (parsedDate !== userDate) {
-            const snippet = rawOcrText.replace(/\s+/g, '').substring(0, 15);
-            if (snippet) {
-              ocrLearningDB[snippet] = userDate;
-              localStorage.setItem('ocr_learning_db', JSON.stringify(ocrLearningDB));
-            }
-          }
-
-          const name = prompt('商品名を入力してください:', '新しい食材');
-          if (name) {
-            items.push({ 
-              name, 
-              expireDate: userDate, 
-              thumb: thumbDataUrl 
-            });
-            saveAndRender();
-          }
-        }
-      } catch (err) {
-        alert('エラーが発生しました: ' + err);
-        document.getElementById('loading').style.display = 'none';
-      }
-    });
 
     renderList();
   </script>
